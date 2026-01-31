@@ -1,12 +1,12 @@
 # Claude Max Proxy
 
-OpenAI-compatible API proxy for Claude Max subscription. Uses direct API calls with OAuth tokens from Claude CLI - no subprocess spawning.
+OpenAI-compatible API proxy for Claude Max subscription. Uses direct API calls with OAuth tokens - no subprocess spawning.
 
 ## Why This Exists
 
 Anthropic blocks OAuth tokens from being used directly with third-party API clients. This proxy:
 
-1. Reads your OAuth tokens from the macOS Keychain (stored by Claude CLI)
+1. Uses your OAuth tokens (from Claude CLI or config file)
 2. Makes direct API calls to Anthropic's API
 3. Translates between OpenAI format and Anthropic format
 4. Handles the required system prompt prefix transparently
@@ -14,29 +14,68 @@ Anthropic blocks OAuth tokens from being used directly with third-party API clie
 ## Requirements
 
 - **Node.js 20+**
-- **Claude CLI** installed and authenticated (`claude` command works)
-- **macOS** (for Keychain access - Linux support coming)
+- **Claude Max subscription** with OAuth tokens
 
 ## Quick Start
 
-```bash
-# Start the proxy
-node server.js
+### macOS (automatic)
 
-# Or with npm
-npm start
+If you have Claude CLI authenticated, just run:
+
+```bash
+node server.js
 ```
 
-The server runs at `http://127.0.0.1:3456` by default.
+It reads tokens from macOS Keychain automatically.
+
+### Linux / Raspberry Pi
+
+Create a config file with your tokens:
+
+```bash
+cat > ~/.claude-max-proxy.json << 'EOF'
+{
+  "accessToken": "sk-ant-oat01-YOUR_ACCESS_TOKEN",
+  "refreshToken": "sk-ant-ort01-YOUR_REFRESH_TOKEN",
+  "expiresAt": 1769918712699
+}
+EOF
+chmod 600 ~/.claude-max-proxy.json
+
+node server.js
+```
+
+Or use environment variables:
+
+```bash
+export CLAUDE_ACCESS_TOKEN="sk-ant-oat01-YOUR_ACCESS_TOKEN"
+export CLAUDE_REFRESH_TOKEN="sk-ant-ort01-YOUR_REFRESH_TOKEN"
+node server.js
+```
+
+### Getting Your Tokens
+
+On a Mac with Claude CLI authenticated:
+
+```bash
+security find-generic-password -s "Claude Code-credentials" -w | jq '.claudeAiOauth'
+```
 
 ## Configuration
-
-Environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3456` | Server port |
 | `HOST` | `127.0.0.1` | Bind address |
+| `CLAUDE_ACCESS_TOKEN` | - | OAuth access token |
+| `CLAUDE_REFRESH_TOKEN` | - | OAuth refresh token |
+| `CLAUDE_TOKEN_EXPIRES` | - | Token expiry (Unix ms) |
+| `CLAUDE_MAX_CONFIG` | `~/.claude-max-proxy.json` | Config file path |
+
+Token sources (checked in order):
+1. Environment variables
+2. Config file (`~/.claude-max-proxy.json`)
+3. macOS Keychain (macOS only)
 
 ## API Endpoints
 
@@ -86,30 +125,87 @@ curl -N http://127.0.0.1:3456/v1/chat/completions \
 
 ## Using with OpenClaw
 
-Add to your OpenClaw config:
+Add to your OpenClaw config (`~/.openclaw/config.json`):
 
-```json5
+```json
 {
-  env: {
-    OPENAI_API_KEY: "not-needed",
-    OPENAI_BASE_URL: "http://127.0.0.1:3456/v1"
+  "env": {
+    "OPENAI_API_KEY": "not-needed",
+    "OPENAI_BASE_URL": "http://127.0.0.1:3456/v1"
   },
-  agents: {
-    defaults: {
-      model: { primary: "openai/claude-sonnet-4" }
+  "agents": {
+    "defaults": {
+      "model": { "primary": "openai/claude-sonnet-4" }
     }
   }
 }
 ```
 
+## Running as a Service
+
+### systemd (Linux/Raspberry Pi)
+
+```bash
+sudo tee /etc/systemd/system/claude-max-proxy.service << 'EOF'
+[Unit]
+Description=Claude Max Proxy
+After=network.target
+
+[Service]
+Type=simple
+User=lobo
+WorkingDirectory=/home/lobo/claude-max-proxy
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=10
+Environment=HOST=127.0.0.1
+Environment=PORT=3456
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable claude-max-proxy
+sudo systemctl start claude-max-proxy
+```
+
+### launchd (macOS)
+
+```bash
+cat > ~/Library/LaunchAgents/com.claude-max-proxy.plist << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.claude-max-proxy</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>WorkingDirectory</key>
+  <string>/path/to/claude-max-proxy</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/node</string>
+    <string>server.js</string>
+  </array>
+</dict>
+</plist>
+EOF
+
+launchctl load ~/Library/LaunchAgents/com.claude-max-proxy.plist
+```
+
 ## How It Works
 
-1. **Token Retrieval**: Reads OAuth credentials from macOS Keychain entry "Claude Code-credentials"
-2. **Token Refresh**: Automatically refreshes expired tokens using Anthropic's OAuth endpoint
+1. **Token Retrieval**: Reads OAuth credentials from env vars, config file, or macOS Keychain
+2. **Token Refresh**: Automatically refreshes expired tokens and saves them
 3. **System Prompt**: Prepends the required "You are Claude Code..." prefix, then appends your system prompt as "Additional instructions"
 4. **Format Translation**: Converts OpenAI message format to Anthropic format and back
 
-## Differences from CLI-based Proxies
+## Performance
 
 | This Proxy | CLI-based Proxies |
 |------------|-------------------|
@@ -120,12 +216,24 @@ Add to your OpenClaw config:
 
 ## Troubleshooting
 
-**"Could not retrieve OAuth tokens"**
-- Make sure Claude CLI is installed: `claude --version`
-- Make sure you're logged in: `claude doctor`
+**"No OAuth tokens found"**
+- Set `CLAUDE_ACCESS_TOKEN` env var, or
+- Create `~/.claude-max-proxy.json` with tokens, or
+- On macOS: authenticate Claude CLI with `claude auth login`
 
 **Token expired errors**
-- The proxy auto-refreshes tokens, but if it fails, re-authenticate: `claude auth login`
+- The proxy auto-refreshes tokens
+- If refresh fails, get new tokens from your Mac
+
+**Getting tokens from Mac to Linux**
+```bash
+# On Mac:
+security find-generic-password -s "Claude Code-credentials" -w | \
+  jq '.claudeAiOauth' > tokens.json
+
+# Copy to Linux:
+scp tokens.json user@linux-host:~/.claude-max-proxy.json
+```
 
 ## License
 

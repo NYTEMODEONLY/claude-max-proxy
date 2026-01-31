@@ -39,11 +39,73 @@ const AVAILABLE_MODELS = [
   { id: 'claude-haiku-4', name: 'Claude Haiku 3.5' },
 ];
 
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+const CONFIG_FILE = process.env.CLAUDE_MAX_CONFIG || join(homedir(), '.claude-max-proxy.json');
+
 /**
- * Token management
+ * Token management - supports multiple sources:
+ * 1. Environment variables (CLAUDE_ACCESS_TOKEN, CLAUDE_REFRESH_TOKEN)
+ * 2. Config file (~/.claude-max-proxy.json)
+ * 3. macOS Keychain (fallback on macOS)
  */
 let cachedTokens = null;
 let tokenExpiry = 0;
+
+function loadTokensFromEnv() {
+  const accessToken = process.env.CLAUDE_ACCESS_TOKEN;
+  const refreshToken = process.env.CLAUDE_REFRESH_TOKEN;
+  const expiresAt = process.env.CLAUDE_TOKEN_EXPIRES ? parseInt(process.env.CLAUDE_TOKEN_EXPIRES) : null;
+
+  if (accessToken) {
+    return { accessToken, refreshToken, expiresAt: expiresAt || Date.now() + 86400000 };
+  }
+  return null;
+}
+
+function loadTokensFromFile() {
+  try {
+    if (existsSync(CONFIG_FILE)) {
+      const data = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'));
+      if (data.accessToken) {
+        return data;
+      }
+    }
+  } catch (e) {
+    console.error('Failed to read config file:', e.message);
+  }
+  return null;
+}
+
+function loadTokensFromKeychain() {
+  // Only works on macOS
+  if (process.platform !== 'darwin') {
+    return null;
+  }
+
+  try {
+    const output = execSync(
+      'security find-generic-password -s "Claude Code-credentials" -w',
+      { encoding: 'utf8', timeout: 5000 }
+    ).trim();
+
+    const creds = JSON.parse(output);
+    return creds.claudeAiOauth;
+  } catch (e) {
+    return null;
+  }
+}
+
+function saveTokensToFile(tokens) {
+  try {
+    writeFileSync(CONFIG_FILE, JSON.stringify(tokens, null, 2), { mode: 0o600 });
+    console.log(`Tokens saved to ${CONFIG_FILE}`);
+  } catch (e) {
+    console.error('Failed to save tokens:', e.message);
+  }
+}
 
 async function getOAuthTokens() {
   // Check if cached token is still valid (with 5 min buffer)
@@ -51,38 +113,32 @@ async function getOAuthTokens() {
     return cachedTokens;
   }
 
-  try {
-    // Read from macOS Keychain
-    const output = execSync(
-      'security find-generic-password -s "Claude Code-credentials" -w',
-      { encoding: 'utf8', timeout: 5000 }
-    ).trim();
+  // Try sources in order: env vars, config file, keychain
+  let oauth = loadTokensFromEnv() || loadTokensFromFile() || loadTokensFromKeychain();
 
-    const creds = JSON.parse(output);
-    const oauth = creds.claudeAiOauth;
-
-    if (!oauth?.accessToken) {
-      throw new Error('No access token found in credentials');
-    }
-
-    // Check if token is expired and needs refresh
-    if (oauth.expiresAt && Date.now() >= oauth.expiresAt - 300000) {
-      console.log('Token expired, attempting refresh...');
-      const refreshed = await refreshToken(oauth.refreshToken);
-      if (refreshed) {
-        cachedTokens = refreshed;
-        tokenExpiry = refreshed.expiresAt;
-        return refreshed;
-      }
-    }
-
-    cachedTokens = oauth;
-    tokenExpiry = oauth.expiresAt || Date.now() + 3600000;
-    return oauth;
-  } catch (e) {
-    console.error('Failed to get OAuth tokens:', e.message);
-    throw new Error('Could not retrieve OAuth tokens. Make sure Claude CLI is authenticated.');
+  if (!oauth?.accessToken) {
+    throw new Error(
+      'No OAuth tokens found. Set CLAUDE_ACCESS_TOKEN env var, ' +
+      `create ${CONFIG_FILE}, or authenticate Claude CLI (macOS only).`
+    );
   }
+
+  // Check if token is expired and needs refresh
+  if (oauth.expiresAt && Date.now() >= oauth.expiresAt - 300000) {
+    console.log('Token expired, attempting refresh...');
+    const refreshed = await refreshToken(oauth.refreshToken);
+    if (refreshed) {
+      // Save refreshed tokens to file for persistence
+      saveTokensToFile(refreshed);
+      cachedTokens = refreshed;
+      tokenExpiry = refreshed.expiresAt;
+      return refreshed;
+    }
+  }
+
+  cachedTokens = oauth;
+  tokenExpiry = oauth.expiresAt || Date.now() + 3600000;
+  return oauth;
 }
 
 async function refreshToken(refreshToken) {
