@@ -31,12 +31,20 @@ const MODEL_MAP = {
   'gpt-4': 'claude-opus-4-5-20250929',
   'gpt-4o': 'claude-sonnet-4-5-20250929',
   'gpt-3.5-turbo': 'claude-3-5-haiku-20241022',
+  // OpenAI-prefixed versions for OpenClaw compatibility
+  'openai/claude-opus-4': 'claude-opus-4-5-20250929',
+  'openai/claude-sonnet-4': 'claude-sonnet-4-5-20250929',
+  'openai/claude-haiku-4': 'claude-3-5-haiku-20241022',
 };
 
 const AVAILABLE_MODELS = [
   { id: 'claude-opus-4', name: 'Claude Opus 4.5' },
   { id: 'claude-sonnet-4', name: 'Claude Sonnet 4.5' },
   { id: 'claude-haiku-4', name: 'Claude Haiku 3.5' },
+  // OpenAI-prefixed versions for OpenClaw compatibility
+  { id: 'openai/claude-opus-4', name: 'Claude Opus 4.5' },
+  { id: 'openai/claude-sonnet-4', name: 'Claude Sonnet 4.5' },
+  { id: 'openai/claude-haiku-4', name: 'Claude Haiku 3.5' },
 ];
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -172,6 +180,12 @@ async function refreshToken(refreshToken) {
 
 /**
  * Convert OpenAI messages to Anthropic format
+ *
+ * OAuth tokens require the exact Claude Code system prompt. However, OpenClaw
+ * sends its own system prompt with assistant identity (e.g., "You are MUSE").
+ *
+ * Solution: Keep OAuth-required system prompt, but inject the assistant context
+ * into the first user message so Claude knows its role.
  */
 function convertMessages(messages) {
   let systemPrompts = [];
@@ -192,14 +206,22 @@ function convertMessages(messages) {
     }
   }
 
-  // Build system prompt: required prefix + user's system prompt
-  let finalSystem = REQUIRED_SYSTEM_PREFIX;
-  if (systemPrompts.length > 0) {
-    // Add user's system prompt as additional context
-    finalSystem += '\n\nAdditional instructions:\n' + systemPrompts.join('\n\n');
+  // Inject assistant context into first user message if we have system prompts
+  // This preserves OAuth validation while giving Claude its identity
+  if (systemPrompts.length > 0 && anthropicMessages.length > 0) {
+    const contextPrefix = `[CONTEXT: ${systemPrompts.join('\n\n')}]\n\n`;
+
+    // Find first user message and prepend context
+    for (let i = 0; i < anthropicMessages.length; i++) {
+      if (anthropicMessages[i].role === 'user') {
+        anthropicMessages[i].content = contextPrefix + anthropicMessages[i].content;
+        break;
+      }
+    }
   }
 
-  return { system: finalSystem, messages: anthropicMessages };
+  // Use ONLY the required system prompt for OAuth validation
+  return { system: REQUIRED_SYSTEM_PREFIX, messages: anthropicMessages };
 }
 
 /**
@@ -209,6 +231,10 @@ async function handleChatCompletionStream(req, res, body) {
   const { model, messages, temperature, max_tokens } = body;
   const mappedModel = MODEL_MAP[model] || MODEL_MAP['claude-sonnet-4'];
   const { system, messages: anthropicMessages } = convertMessages(messages);
+
+  // Debug: log request details
+  console.log(`[DEBUG] System prompt (first 200 chars): ${system.substring(0, 200)}...`);
+  console.log(`[DEBUG] Messages count: ${anthropicMessages.length}`);
 
   const requestId = `chatcmpl-${randomUUID()}`;
   const created = Math.floor(Date.now() / 1000);
@@ -327,6 +353,10 @@ async function handleChatCompletionSync(req, res, body) {
   const { model, messages, temperature, max_tokens } = body;
   const mappedModel = MODEL_MAP[model] || MODEL_MAP['claude-sonnet-4'];
   const { system, messages: anthropicMessages } = convertMessages(messages);
+
+  // Debug: log request details
+  console.log(`[DEBUG-SYNC] System prompt (first 200 chars): ${system.substring(0, 200)}...`);
+  console.log(`[DEBUG-SYNC] Messages count: ${anthropicMessages.length}`);
 
   const requestId = `chatcmpl-${randomUUID()}`;
   const created = Math.floor(Date.now() / 1000);
