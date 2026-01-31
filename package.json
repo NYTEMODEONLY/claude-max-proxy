@@ -1,0 +1,38 @@
+{
+  "name": "claude-max-proxy",
+  "version": "1.0.0",
+  "description": "OpenAI-compatible API proxy for Claude Max subscriptions - direct API, no CLI subprocess",
+  "type": "module",
+  "main": "server.js",
+  "bin": {
+    "claude-max-proxy": "./server.js"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "./test.sh"
+  },
+  "keywords": [
+    "claude",
+    "anthropic",
+    "openai",
+    "proxy",
+    "api",
+    "claude-max",
+    "openclaw"
+  ],
+  "author": "NYTEMODEONLY",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NYTEMODEONLY/claude-max-proxy.git"
+  },
+  "bugs": {
+    "url": "https://github.com/NYTEMODEONLY/claude-max-proxy/issues"
+  },
+  "homepage": "https://github.com/NYTEMODEONLY/claude-max-proxy#readme",
+  "dependencies": {},
+  "engines": {
+    "node": ">=20"
+  }
+}
