@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 /**
- * Claude Max Proxy v3.3.0 - XML Filtered + Empty Message Fix
+ * Claude Max Proxy v3.4.0 - XML Tool History Reconstruction
+ * Fixes: "[Using tools...]" loop by reconstructing XML tool calls in history
  */
 
 import { createServer } from 'node:http';
@@ -136,6 +137,26 @@ function parseXmlToolCalls(text) {
   return { toolCalls, cleanText };
 }
 
+// Convert tool_calls back to XML format for Claude's understanding
+function toolCallsToXml(toolCalls) {
+  if (!toolCalls || toolCalls.length === 0) return '';
+
+  let xml = '<function_calls>\n';
+  for (const call of toolCalls) {
+    const fn = call.function;
+    let args = {};
+    try { args = JSON.parse(fn.arguments || '{}'); } catch (e) {}
+
+    xml += `<invoke name="${fn.name}">\n`;
+    for (const [key, value] of Object.entries(args)) {
+      xml += `<parameter name="${key}">${value}</parameter>\n`;
+    }
+    xml += '</invoke>\n';
+  }
+  xml += '</function_calls>';
+  return xml;
+}
+
 function extractText(content) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) return content.filter(c => c.type === 'text').map(c => c.text).join('\n');
@@ -145,7 +166,7 @@ function extractText(content) {
 function convertMessages(messages, tools) {
   let systemPrompts = [];
   const anthropicMessages = [];
-  
+
   for (const msg of messages) {
     if (msg.role === 'system') {
       systemPrompts.push(extractText(msg.content));
@@ -156,11 +177,14 @@ function convertMessages(messages, tools) {
       }
     } else if (msg.role === 'assistant') {
       let content = extractText(msg.content);
-      // If assistant message has tool_calls but no content, add placeholder
-      if ((!content || content.trim() === '') && msg.tool_calls && msg.tool_calls.length > 0) {
-        content = '[Using tools...]';
+
+      // If assistant message has tool_calls but no/empty content,
+      // reconstruct the XML tool call format so Claude recognizes it as its own action
+      if ((!content || content.trim() === '' || content === '[Using tools...]') && msg.tool_calls && msg.tool_calls.length > 0) {
+        content = toolCallsToXml(msg.tool_calls);
       }
-      // Skip completely empty assistant messages (shouldn't happen, but safety)
+
+      // Skip completely empty assistant messages
       if (content && content.trim()) {
         anthropicMessages.push({ role: 'assistant', content });
       }
@@ -169,18 +193,17 @@ function convertMessages(messages, tools) {
       anthropicMessages.push({ role: 'user', content });
     }
   }
-  
-  // Ensure we don't have consecutive same-role messages (merge or fix)
+
+  // Ensure we don't have consecutive same-role messages (merge)
   const fixedMessages = [];
   for (const msg of anthropicMessages) {
     if (fixedMessages.length > 0 && fixedMessages[fixedMessages.length - 1].role === msg.role) {
-      // Merge consecutive same-role messages
       fixedMessages[fixedMessages.length - 1].content += '\n\n' + msg.content;
     } else {
       fixedMessages.push(msg);
     }
   }
-  
+
   // Inject tool context into first user message
   const toolContext = buildToolContext(tools, systemPrompts);
   if (toolContext && fixedMessages.length > 0) {
@@ -191,7 +214,7 @@ function convertMessages(messages, tools) {
       }
     }
   }
-  
+
   return { system: CLAUDE_CODE_SYSTEM, messages: fixedMessages };
 }
 
@@ -310,9 +333,9 @@ async function handleChat(req, res, body) {
       const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
       const { toolCalls, cleanText } = parseXmlToolCalls(text);
 
-      // Ensure we always have some content for the response
+      // For response to client: null content is OK when we have tool_calls
       const finalContent = cleanText || (toolCalls.length > 0 ? null : 'Done.');
-      
+
       const message = { role: 'assistant', content: finalContent };
       if (toolCalls.length > 0) message.tool_calls = toolCalls;
 
@@ -323,14 +346,14 @@ async function handleChat(req, res, body) {
           'Connection': 'keep-alive',
           'Access-Control-Allow-Origin': '*',
         });
-        
+
         if (finalContent) {
           res.write(`data: ${JSON.stringify({
             id: requestId, object: 'chat.completion.chunk', created, model,
             choices: [{ index: 0, delta: { content: finalContent }, finish_reason: null }]
           })}\n\n`);
         }
-        
+
         if (toolCalls.length > 0) {
           res.write(`data: ${JSON.stringify({
             id: requestId, object: 'chat.completion.chunk', created, model,
@@ -342,7 +365,7 @@ async function handleChat(req, res, body) {
             choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
           })}\n\n`);
         }
-        
+
         res.write('data: [DONE]\n\n');
         res.end();
       } else {
@@ -386,9 +409,9 @@ async function handleRequest(req, res) {
   if (path === '/health' || path === '/') {
     try {
       await getOAuthTokens();
-      return sendJSON(res, 200, { status: 'ok', version: '3.3.0', mode: 'xml-filtered', features: ['oauth', 'tools', 'empty-msg-fix'] });
+      return sendJSON(res, 200, { status: 'ok', version: '3.4.0', mode: 'xml-history-reconstruction', features: ['oauth', 'tools', 'xml-history'] });
     } catch (e) {
-      return sendJSON(res, 200, { status: 'error', version: '3.3.0', error: e.message });
+      return sendJSON(res, 200, { status: 'error', version: '3.4.0', error: e.message });
     }
   }
 
@@ -415,11 +438,11 @@ server.listen(PORT, HOST, async () => {
   try { await getOAuthTokens(); status = 'valid'; } catch (e) { status = e.message; }
   console.log(`
 ╔═══════════════════════════════════════════════════════════════╗
-║     Claude Max Proxy v3.3.0 (Empty Message Fix)               ║
+║     Claude Max Proxy v3.4.0 (XML History Reconstruction)      ║
 ╠═══════════════════════════════════════════════════════════════╣
 ║  Server: http://${HOST}:${PORT}                                   ║
 ║  Token:  ${status.padEnd(45)}║
-║  Fix:    Handles empty assistant messages from tool calls     ║
+║  Fix:    Tool calls in history converted back to XML format   ║
 ╚═══════════════════════════════════════════════════════════════╝
 `);
 });
