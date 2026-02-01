@@ -20,19 +20,19 @@ const REQUIRED_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI fo
 
 // Model mapping
 const MODEL_MAP = {
-  'claude-opus-4': 'claude-opus-4-5-20250929',
-  'claude-opus-4.5': 'claude-opus-4-5-20250929',
+  'claude-opus-4': 'claude-opus-4-5-20251101',
+  'claude-opus-4.5': 'claude-opus-4-5-20251101',
   'claude-sonnet-4': 'claude-sonnet-4-5-20250929',
   'claude-sonnet-4.5': 'claude-sonnet-4-5-20250929',
   'claude-haiku-4': 'claude-3-5-haiku-20241022',
-  'opus': 'claude-opus-4-5-20250929',
+  'opus': 'claude-opus-4-5-20251101',
   'sonnet': 'claude-sonnet-4-5-20250929',
   'haiku': 'claude-3-5-haiku-20241022',
-  'gpt-4': 'claude-opus-4-5-20250929',
+  'gpt-4': 'claude-opus-4-5-20251101',
   'gpt-4o': 'claude-sonnet-4-5-20250929',
   'gpt-3.5-turbo': 'claude-3-5-haiku-20241022',
   // OpenAI-prefixed versions for OpenClaw compatibility
-  'openai/claude-opus-4': 'claude-opus-4-5-20250929',
+  'openai/claude-opus-4': 'claude-opus-4-5-20251101',
   'openai/claude-sonnet-4': 'claude-sonnet-4-5-20250929',
   'openai/claude-haiku-4': 'claude-3-5-haiku-20241022',
 };
