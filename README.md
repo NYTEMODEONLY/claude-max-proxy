@@ -365,3 +365,7 @@ scp tokens.json user@linux-host:~/.claude-max-proxy.json
 ## License
 
 MIT
+
+---
+
+A [nytemode](https://nytemode.com) project
