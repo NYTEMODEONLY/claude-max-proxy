@@ -225,21 +225,50 @@ function convertMessages(messages) {
 }
 
 /**
+ * Build extended thinking config if requested
+ */
+function buildThinkingConfig(body) {
+  // Check for various ways thinking might be requested
+  const thinkingRequested = body.thinking || body.reasoning ||
+    body.extended_thinking || body.enable_thinking;
+
+  if (!thinkingRequested) return null;
+
+  // Default budget: 10000 tokens (min is 1024)
+  let budgetTokens = 10000;
+
+  if (typeof thinkingRequested === 'object' && thinkingRequested.budget_tokens) {
+    budgetTokens = Math.max(1024, thinkingRequested.budget_tokens);
+  } else if (typeof body.thinking_budget === 'number') {
+    budgetTokens = Math.max(1024, body.thinking_budget);
+  }
+
+  return {
+    type: 'enabled',
+    budget_tokens: budgetTokens
+  };
+}
+
+/**
  * Handle streaming chat completion
  */
 async function handleChatCompletionStream(req, res, body) {
   const { model, messages, temperature, max_tokens } = body;
   const mappedModel = MODEL_MAP[model] || MODEL_MAP['claude-sonnet-4'];
   const { system, messages: anthropicMessages } = convertMessages(messages);
+  const thinkingConfig = buildThinkingConfig(body);
 
   // Debug: log request details
   console.log(`[DEBUG] System prompt (first 200 chars): ${system.substring(0, 200)}...`);
   console.log(`[DEBUG] Messages count: ${anthropicMessages.length}`);
+  if (thinkingConfig) {
+    console.log(`[DEBUG] Extended thinking enabled: budget=${thinkingConfig.budget_tokens}`);
+  }
 
   const requestId = `chatcmpl-${randomUUID()}`;
   const created = Math.floor(Date.now() / 1000);
 
-  console.log(`[${new Date().toISOString()}] Stream: model=${mappedModel}`);
+  console.log(`[${new Date().toISOString()}] Stream: model=${mappedModel}${thinkingConfig ? ' (thinking)' : ''}`);
 
   let tokens;
   try {
@@ -256,6 +285,23 @@ async function handleChatCompletionStream(req, res, body) {
     'Access-Control-Allow-Origin': '*',
   });
 
+  // Build request body
+  const requestBody = {
+    model: mappedModel,
+    system: system,
+    messages: anthropicMessages,
+    max_tokens: max_tokens || 4096,
+    stream: true,
+  };
+
+  // Add thinking config if enabled (temperature not compatible with thinking)
+  if (thinkingConfig) {
+    requestBody.thinking = thinkingConfig;
+    // Temperature must be unset or 1 when thinking is enabled
+  } else if (temperature !== undefined) {
+    requestBody.temperature = temperature;
+  }
+
   try {
     const response = await fetch(ANTHROPIC_API_URL, {
       method: 'POST',
@@ -265,14 +311,7 @@ async function handleChatCompletionStream(req, res, body) {
         'anthropic-version': '2023-06-01',
         'anthropic-beta': 'oauth-2025-04-20',
       },
-      body: JSON.stringify({
-        model: mappedModel,
-        system: system,
-        messages: anthropicMessages,
-        max_tokens: max_tokens || 4096,
-        temperature: temperature,
-        stream: true,
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     if (!response.ok) {
@@ -303,6 +342,7 @@ async function handleChatCompletionStream(req, res, body) {
         try {
           const event = JSON.parse(data);
 
+          // Handle text content (regular response)
           if (event.type === 'content_block_delta' && event.delta?.text) {
             const sseData = {
               id: requestId,
@@ -316,7 +356,14 @@ async function handleChatCompletionStream(req, res, body) {
               }],
             };
             res.write(`data: ${JSON.stringify(sseData)}\n\n`);
-          } else if (event.type === 'message_stop') {
+          }
+          // Skip thinking_delta events - internal reasoning stays hidden
+          else if (event.type === 'content_block_delta' && event.delta?.thinking) {
+            // Thinking content - don't send to client
+            // Could optionally log: console.log('[THINKING]', event.delta.thinking);
+          }
+          // Handle message completion
+          else if (event.type === 'message_stop') {
             const sseData = {
               id: requestId,
               object: 'chat.completion.chunk',
@@ -353,21 +400,41 @@ async function handleChatCompletionSync(req, res, body) {
   const { model, messages, temperature, max_tokens } = body;
   const mappedModel = MODEL_MAP[model] || MODEL_MAP['claude-sonnet-4'];
   const { system, messages: anthropicMessages } = convertMessages(messages);
+  const thinkingConfig = buildThinkingConfig(body);
 
   // Debug: log request details
   console.log(`[DEBUG-SYNC] System prompt (first 200 chars): ${system.substring(0, 200)}...`);
   console.log(`[DEBUG-SYNC] Messages count: ${anthropicMessages.length}`);
+  if (thinkingConfig) {
+    console.log(`[DEBUG-SYNC] Extended thinking enabled: budget=${thinkingConfig.budget_tokens}`);
+  }
 
   const requestId = `chatcmpl-${randomUUID()}`;
   const created = Math.floor(Date.now() / 1000);
 
-  console.log(`[${new Date().toISOString()}] Sync: model=${mappedModel}`);
+  console.log(`[${new Date().toISOString()}] Sync: model=${mappedModel}${thinkingConfig ? ' (thinking)' : ''}`);
 
   let tokens;
   try {
     tokens = await getOAuthTokens();
   } catch (e) {
     return sendJSON(res, 401, { error: { message: e.message } });
+  }
+
+  // Build request body
+  const requestBody = {
+    model: mappedModel,
+    system: system,
+    messages: anthropicMessages,
+    max_tokens: max_tokens || 4096,
+    stream: false,
+  };
+
+  // Add thinking config if enabled (temperature not compatible with thinking)
+  if (thinkingConfig) {
+    requestBody.thinking = thinkingConfig;
+  } else if (temperature !== undefined) {
+    requestBody.temperature = temperature;
   }
 
   try {
@@ -379,14 +446,7 @@ async function handleChatCompletionSync(req, res, body) {
         'anthropic-version': '2023-06-01',
         'anthropic-beta': 'oauth-2025-04-20',
       },
-      body: JSON.stringify({
-        model: mappedModel,
-        system: system,
-        messages: anthropicMessages,
-        max_tokens: max_tokens || 4096,
-        temperature: temperature,
-        stream: false,
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     if (!response.ok) {
@@ -396,7 +456,9 @@ async function handleChatCompletionSync(req, res, body) {
     }
 
     const data = await response.json();
-    const content = data.content?.[0]?.text || '';
+    // Extract only text content, filtering out thinking blocks
+    const textBlocks = (data.content || []).filter(block => block.type === 'text');
+    const content = textBlocks.map(block => block.text).join('\n') || '';
 
     const result = {
       id: requestId,
